@@ -1,4 +1,4 @@
-# Super-Resolution
+# SenGLEAN: An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images
 
 ### Environment Requirements
 
@@ -9,16 +9,6 @@ pip install -r requirements_cc.txt
 ```
 
 Increase spatial resolution of multispectral images using AI (ML/DL)
-
-**10m Bands SR model**
-
-* [ESRGAN-PA](./ESRGAN-PA/)
-
-
-**20m Bands SR model**
-
-* [RefGLEAN](./RefGLEAN/)
-* [LightRefGLEAN](./LightRefGLEAN/)
 
 **All Bands SR model**
 
