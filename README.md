@@ -32,10 +32,11 @@ Then you can perform the inference using the [Inference Notebook](./Inference.ip
 ## Citation
 
 ```
-@ARTICLE{Gupta2024senglean,
-  author={Gupta, Ayush and Mishra, Rakesh and Zhang, Yun},
-  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
-  title={SenGLEAN: An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images}, 
-  year={2024},
-  doi={10.1109/TGRS.2024.3374575}}
+@article{Gupta2024senglean,
+  author    = {Gupta, Ayush and Mishra, Rakesh and Zhang, Yun},
+  journal   = {IEEE Transactions on Geoscience and Remote Sensing}, 
+  title     = {SenGLEAN: An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images}, 
+  year      = {2024},
+  doi       = {10.1109/TGRS.2024.3374575}
+}
 ```
