@@ -1,5 +1,6 @@
 # SenGLEAN - Official PyTorch Implementation
 
+![Teaser image](./docs/comp_plot_senglean.png)
 
 **An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images**<br>
 Ayush Gupta, Rakesh Mishra, Yun Zhang<br>
@@ -26,3 +27,15 @@ For evaluation the model on a new dataset first perform target adaptation using 
 Then you can perform the inference using the [Inference Notebook](./Inference.ipynb)
 
 > **_NOTE_:** During inference the bands of sentinel input must be [B2, B3, B4, B8] @ 10m  + [ B5, B6, B7, B8a ] (interpolated to 10m)
+
+
+## Citation
+
+```
+@ARTICLE{Gupta2024senglean,
+  author={Gupta, Ayush and Mishra, Rakesh and Zhang, Yun},
+  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
+  title={SenGLEAN: An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images}, 
+  year={2024},
+  doi={10.1109/TGRS.2024.3374575}}
+```
