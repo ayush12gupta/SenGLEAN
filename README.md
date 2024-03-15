@@ -1,4 +1,7 @@
-# SenGLEAN: An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images
+# SenGLEAN - Official PyTorch Implementation
+
+
+**An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images**
 
 ### Environment Requirements
 
