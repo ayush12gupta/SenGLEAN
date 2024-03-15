@@ -1,6 +1,6 @@
 # SenGLEAN - Official PyTorch Implementation
 
-![Teaser image](./docs/comp_plot_senglean.png)
+![Teaser image](./docs/comparison_plot.png)
 
 **An End-to-End Deep Learning Approach for Super-Resolution of Sentinel-2 Multi-Resolution Multispectral Images**<br>
 Ayush Gupta, Rakesh Mishra, Yun Zhang<br>
