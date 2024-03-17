@@ -29,6 +29,7 @@ Then you can perform the inference using the [Inference Notebook](./Inference.ip
 
 ## Citation
 
+If you find this code helpful, please cite our paper:
 ```
 @article{Gupta2024senglean,
   author    = {Gupta, Ayush and Mishra, Rakesh and Zhang, Yun},
