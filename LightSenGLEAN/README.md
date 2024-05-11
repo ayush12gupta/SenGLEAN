@@ -1,4 +1,4 @@
-# LightSenRefGLEAN
+# LightSenGLEAN
 
 For 20m bands training we utilise dataloader in two modes:
 * Degraded Venus + Original Venus image pairs
