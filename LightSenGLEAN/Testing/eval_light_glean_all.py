@@ -190,8 +190,102 @@ def test(args):
 
                 gen_total_loss.backward()
                 optimizerG.step()
-                # PATCH: metrics removed
-                print(f'[{iters}/{n_epoch_init}] loss={gen_total_loss.item():.5f} spectral={gen_spectral_loss.item():.6f} adv={adv_loss.item():.4f} ssim={errG_ssim.item():.4f}')
+
+                if not args.evaluate:  # fast path (default): skip metrics; pass --evals to compute them
+                    print(f'[{iters}/{n_epoch_init}] loss={gen_total_loss.item():.5f} spectral={gen_spectral_loss.item():.6f} adv={adv_loss.item():.4f} ssim={errG_ssim.item():.4f}')
+                    iters += 1
+                    schedulerG.step()
+                    print(f'Time Elapsed: {(time.time()-start_time): .2f}')
+                    continue
+
+                ms_fake = ms_fake.detach().cpu()
+                ms_up = ms_up.detach().cpu()
+                ms_interp = ms_interp.detach().cpu()
+                ms_rgb = ms_rgb.detach().cpu()
+
+                _, _, H, W = ms_fake.shape
+                # print(ms_fake.shape)
+                ms_fake = center_crop(ms_fake, H-20-((H-20)%8))
+                ms_up = center_crop(ms_up, H-20-((H-20)%8))
+                ms_interp = center_crop(ms_interp, H-20-((H-20)%8))
+                _, _, H2, W2 = ms_fake.shape
+                ms = center_crop(ms, H2//4)
+
+                ds_res = d_s_batch(ms_up[:,:4].detach().cpu(), ms[:,:4].detach().cpu(), ms_fake[:,:4].detach().cpu())
+                ds_res_bi = d_s_batch(ms_up[:,:4].detach().cpu(), ms[:,:4].detach().cpu(), ms_interp[:,:4].detach().cpu())
+
+                dlam_res = d_lambda_batch(recover_bandwise_all(ms_up, norm_data=norm)[:,:4], recover_bandwise_all(ms_fake, norm_data=norm)[:,:4])
+                dlam_res_bi = d_lambda_batch(recover_bandwise_all(ms_up, norm_data=norm)[:,:4], recover_bandwise_all(ms_interp, norm_data=norm)[:,:4])
+
+                psnr_results_rgb = psnr(ms_fake[:,:4], ms_up[:,:4])
+                psnr_results_bi_rgb = psnr(ms_interp[:,:4], ms_up[:,:4])
+                psnr_results_20m = psnr(ms_fake[:,4:], ms_up[:,4:])
+                psnr_results_bi_20m = psnr(ms_interp[:,4:], ms_up[:,4:])
+                psnr_bands_res = psnr_bands(ms_fake.detach().cpu(), ms_up.detach().cpu())
+                psnr_bands_res_bi = psnr_bands(ms_interp.detach().cpu(), ms_up.detach().cpu())
+
+                rmse_results_rgb = rmse(recover_bandwise_all(ms_fake, norm_data=norm)[:,:4], recover_bandwise_all(ms_up, norm_data=norm)[:,:4])
+                rmse_results_bi_rgb = rmse(recover_bandwise_all(ms_interp, norm_data=norm)[:,:4], recover_bandwise_all(ms_up, norm_data=norm)[:,:4])
+                rmse_results_20m = rmse(recover_bandwise_all(ms_fake, norm_data=norm)[:,4:], recover_bandwise_all(ms_up, norm_data=norm)[:,4:])
+                rmse_results_bi_20m = rmse(recover_bandwise_all(ms_interp, norm_data=norm)[:,4:], recover_bandwise_all(ms_up, norm_data=norm)[:,4:])
+                rmse_bands_res = rmse_bands(recover_bandwise_all(ms_fake, norm_data=norm), recover_bandwise_all(ms_up, norm_data=norm))
+                rmse_bands_res_bi = rmse_bands(recover_bandwise_all(ms_interp, norm_data=norm), recover_bandwise_all(ms_up, norm_data=norm))
+
+                ssim_results_rgb = ssim_module(ms_fake[:,:4], ms_up[:,:4])
+                ssim_results_bi_rgb = ssim_module(ms_interp[:,:4], ms_up[:,:4])
+
+                ssim_results_20m = ssim_module(ms_fake[:,4:], ms_up[:,4:])
+                ssim_results_bi_20m = ssim_module(ms_interp[:,4:], ms_up[:,4:])
+
+                sam_res = sam_batch(ms_up[:,:3].detach().cpu(), ms_fake[:,:3].detach().cpu())
+                sam_res_bi = sam_batch(ms_up[:,:3].detach().cpu(), ms_interp[:,:3].detach().cpu())
+
+                uqi_res = uqi_batch(ms_up[:,:].detach().cpu(), ms_fake[:,:].detach().cpu())
+                uqi_res_bi = uqi_batch(ms_up[:,:].detach().cpu(), ms_interp[:,:].detach().cpu())
+                scc_res = scc_batch(ms_up[:,:].detach().cpu(), ms_fake[:,:].detach().cpu())
+                scc_res_bi = scc_batch(ms_up[:,:].detach().cpu(), ms_interp[:,:].detach().cpu())
+
+                cc_res = cc_batch(ms_up[:,:], ms_fake[:,:])
+                cc_res_bi = cc_batch(ms_up[:,:], ms_interp[:,:])
+
+                niqe_rgb_res = niqe_rgb(ms_fake[:,:3].flip(1)*255).mean().item()
+                niqe_rgb_res_bi = niqe_rgb(ms_up[:,:3].flip(1)*255).mean().item()
+                niqe_rgb_res_at = niqe_rgb(ms_interp[:,:3].flip(1)*255).mean().item()
+
+                niqe_20m_res = niqe_20m(ms_fake[:,4:7].flip(1)*255).mean().item()
+                niqe_20m_res_bi = niqe_20m(ms_up[:,4:7].flip(1)*255).mean().item()
+                niqe_20m_res_at = niqe_20m(ms_interp[:,4:7].flip(1)*255).mean().item()
+                # print(d_gen.mean(), d_gen.min(), d_gen.max(), D_fake.shape, d_gen.shape, 'jkj')
+
+                print(f'[{iters}/{n_epoch_init}] ({gen_total_loss.item():.5f}) | Gen_Spectral: {gen_spectral_loss.item():.6f} | Adv Loss: {adv_loss.item():.4f} | SSIM Loss: {errG_ssim.item():.4f}' # | Content Loss: {content_loss.item():.6f}' 
+                      f'| RMSE_RGB: ({rmse_results_rgb.item():.4f}/{rmse_results_bi_rgb.item():.4f})\n'
+                      f'| RMSE_20m: ({rmse_results_20m.item():.4f}/{rmse_results_bi_20m.item():.4f})\n'
+                      f'| PSNR_RGB: ({psnr_results_rgb.item():.3f}/{psnr_results_bi_rgb.item():.3f})\n'
+                      f'| PSNR_20m: ({psnr_results_20m.item():.3f}/{psnr_results_bi_20m.item():.3f})\n'
+                      f'| SAM: ({sam_res:.4f}/{sam_res_bi: .4f})\n'
+                      f'| SSIM_RGB: ({ssim_results_rgb:.4f}/{ssim_results_bi_rgb: .4f})\n'
+                      f'| SSIM_20m: ({ssim_results_20m:.4f}/{ssim_results_bi_20m: .4f})\n'
+                      f'| UQI: ({uqi_res:.4f}/{uqi_res_bi: .4f})\n'
+                      f'| SCC: ({scc_res:.4f}/{scc_res_bi: .4f})\n'
+                      f'| D_lambda: ({dlam_res:.4f}/{dlam_res_bi: .4f})\n'
+                      f'| D_s: ({ds_res:.4f}/{ds_res_bi: .4f})\n'
+                      f'| NIQE_rgb: ({niqe_rgb_res:.4f}/{niqe_rgb_res_bi: .4f}/{niqe_rgb_res_at: .4f})\n'
+                      f'| NIQE_20m: ({niqe_20m_res:.4f}/{niqe_20m_res_bi: .4f}/{niqe_20m_res_at: .4f})\n'
+                      )
+                print('RMSE_bands:', rmse_bands_res, '/', rmse_bands_res_bi)
+                print('PSNR_bands:', psnr_bands_res, '/', psnr_bands_res_bi)
+                print('CC_bands:', cc_res, '/', cc_res_bi)
+
+                # if iters%2 == 0:
+                #     d_gen = torch.abs(ms_fake - ms_up).mean(1)
+                #     savemat_plot_senven_RGBnorm(ms_fake[:,:4], ms_interp[:,:4], ms_up[:,:4], save_dir, s, d_gen, abs_diff=True, filename=f'plot_rgbn_{iters}.png')
+                #     savemat_plot_senven_20mnorm(ms_fake[:,4:], ms_interp[:,4:], ms_up[:,4:], save_dir, s, d_gen, abs_diff=True, filename=f'plot_20m_{iters}.png')
+
+                # elif iters%2 == 1:
+                #     d_gen = torch.sigmoid(D_fake.detach().cpu()).mean(1)
+                #     # savemat_plot_senven_20mnorm(ms_fake, ms_interp, ms_up, save_dir, s, d_gen, filename=f'plot_{iters}.png')
+                #     savemat_plot_senven_RGBnorm(ms_fake[:,:4], ms_interp[:,:4], ms_up[:,:4], save_dir, s, d_gen, filename=f'plot_rgbn_{iters}.png')
+                #     savemat_plot_senven_20mnorm(ms_fake[:,4:], ms_interp[:,4:], ms_up[:,4:], save_dir, s, d_gen, filename=f'plot_20m_{iters}.png')
 
                 iters += 1
 
@@ -201,8 +295,8 @@ def test(args):
         # Saving the target adaptive model
         torch.save(netG.state_dict(), f'{args.checkpoint_g[:-3]}_TA.pt')
 
-    # PATCH: final evaluation skipped
-    return
+    if not args.evaluate:  # fast path (default): skip the final evaluation; pass --evals to run it
+        return
 
     # Final evaluation of model
     # netG = netG_opt.to(device)
