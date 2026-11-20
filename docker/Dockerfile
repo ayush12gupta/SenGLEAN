@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libgdal-dev gdal-bin git procps gawk zstd ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install -U pip "setuptools<70" wheel numpy==1.24.4  # torch 2.0.1 imports pkg_resources, dropped from newer setuptools \
+# setuptools<70: torch 2.0.1 imports pkg_resources, which newer setuptools no longer ships
+RUN pip install -U pip "setuptools<70" wheel numpy==1.24.4 \
     && pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-build-isolation "GDAL==$(gdal-config --version)" \
     && echo "numpy==1.24.4" > /tmp/c.txt \
