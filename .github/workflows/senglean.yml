@@ -72,6 +72,11 @@ env:
 jobs:
   prep:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       DAYS: ${{ steps.pick.outputs.DAYS }}
       CHUNKS: ${{ steps.pick.outputs.CHUNKS }}
@@ -79,13 +84,9 @@ jobs:
       CHUNK_COUNT: ${{ steps.pick.outputs.CHUNK_COUNT }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: pip install pystac-client planetary-computer shapely pyproj
       - name: Select days and plan chunks
         id: pick
-        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$MAX_CHUNKS" "$TA_KM"
+        run: /opt/dv/bin/python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$MAX_CHUNKS" "$TA_KM"
       - name: Summarize request
         run: |
           {
@@ -243,15 +244,16 @@ jobs:
       matrix: ${{ fromJson(needs.prep.outputs.DAYS) }}
     name: merge ${{ matrix.date }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 60
     env:
       DATE: ${{ matrix.date }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: pip install rasterio numpy
       - uses: actions/download-artifact@v4
         with:
           pattern: chunk-${{ matrix.date }}-*
@@ -260,7 +262,7 @@ jobs:
       - name: Stitch chunks
         run: |
           mkdir -p result
-          python ci/merge_chunks.py "result/senglean_${DATE}.tif" chunks/*.tif
+          /opt/dv/bin/python ci/merge_chunks.py "result/senglean_${DATE}.tif" chunks/*.tif
           ls -lh result
       - uses: actions/upload-artifact@v4
         with:

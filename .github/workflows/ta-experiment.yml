@@ -1,0 +1,172 @@
+# Does averaging parallel adaptation match serial adaptation? Variants, all scored on the same AOI clip:
+#   center_153     : 153 steps on the 6 km centre crop (what the senglean workflow does)
+#   full_<n>       : n steps on the whole AOI clip (same data the shards see); n = 5..153 gives the convergence curve
+#   shards_c       : 9 shards x <shard_steps> steps from the base weights, averaged once
+#   round1, round2 : two rounds of 9 shards x <round_steps> steps, averaging after each (round 2 starts from round 1's average)
+# plus the base weights and bicubic. Self-supervised PSNR/SSIM (degrade, then reconstruct).
+name: ta-experiment
+on:
+  workflow_dispatch:
+    inputs:
+      shard_steps:
+        type: string
+        default: "17"
+      round_steps:
+        type: string
+        default: "8"
+
+permissions:
+  contents: read
+
+env:
+  SHARD: ${{ inputs.shard_steps || '17' }}
+  ROUND: ${{ inputs.round_steps || '8' }}
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the AOI clip (Fredericton, 2025-09-12)
+        run: |
+          /opt/dv/bin/python ci/make_clip.py --epsg 32619 --bounds 675920 5086020 689330 5099390 --out data/aoi.tif \
+            --items S2C_MSIL2A_20250912T152641_R068_T19TFM_20250912T212415,S2C_MSIL2A_20250912T152641_R068_T19TFL_20250912T212415
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clip
+          path: data/aoi.tif
+          retention-days: 7
+
+  adapt:
+    needs: data
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: center_153, mode: center, steps: 153}
+          - {name: full_5, mode: full, steps: 5}
+          - {name: full_10, mode: full, steps: 10}
+          - {name: full_20, mode: full, steps: 20}
+          - {name: full_40, mode: full, steps: 40}
+          - {name: full_80, mode: full, steps: 80}
+          - {name: full_153, mode: full, steps: 153}
+    name: ${{ matrix.name }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      NAME: ${{ matrix.name }}
+      MODE: ${{ matrix.mode }}
+      STEPS: ${{ matrix.steps }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/base-weights
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip
+          path: data
+      - name: Adaptation data
+        run: |
+          if [ "$MODE" = center ]; then /opt/dv/bin/python ci/crop_center.py data/aoi.tif data/ta.tif 6; else cp data/aoi.tif data/ta.tif; fi
+      - name: Adapt
+        working-directory: LightSenGLEAN/Testing
+        run: |
+          python eval_light_glean_all.py --checkpoint_g ../weights/gens_light_sen_glean.pt --checkpoint_d ../weights/discs_all.pt \
+            --batch 1 --nepoch "$STEPS" --do_TA --data_path "$GITHUB_WORKSPACE/data/ta.tif" 2>&1 | tail -n 40
+          mkdir -p "$GITHUB_WORKSPACE/out" && cp ../weights/gens_light_sen_glean_TA.pt "$GITHUB_WORKSPACE/out/$NAME.pt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta-${{ matrix.name }}
+          path: out/${{ matrix.name }}.pt
+          retention-days: 7
+
+  c:
+    needs: data
+    uses: ./.github/workflows/ta-round.yml
+    with:
+      tag: c
+      start: base
+      steps: ${{ inputs.shard_steps || '17' }}
+
+  r1:
+    needs: data
+    uses: ./.github/workflows/ta-round.yml
+    with:
+      tag: r1
+      start: base
+      steps: ${{ inputs.round_steps || '8' }}
+
+  r2:
+    needs: r1
+    uses: ./.github/workflows/ta-round.yml
+    with:
+      tag: r2
+      start: avg-r1
+      steps: ${{ inputs.round_steps || '8' }}
+
+  score:
+    needs: [adapt, c, r1, r2]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/base-weights
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip
+          path: data
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ta-*
+          merge-multiple: true
+          path: ckpt/ta
+      - uses: actions/download-artifact@v4
+        with:
+          name: avg-c
+          path: ckpt/c
+      - uses: actions/download-artifact@v4
+        with:
+          name: avg-r1
+          path: ckpt/r1
+      - uses: actions/download-artifact@v4
+        with:
+          name: avg-r2
+          path: ckpt/r2
+      - name: Score
+        working-directory: LightSenGLEAN/Testing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          W="$GITHUB_WORKSPACE"
+          V=(base=../weights/gens_light_sen_glean.pt)
+          for f in $(ls "$W"/ckpt/ta/*.pt | sort -V); do V+=("$(basename "$f" .pt)=$f"); done
+          V+=(shards_c="$W/ckpt/c/avg.pt" round1="$W/ckpt/r1/avg.pt" round2="$W/ckpt/r2/avg.pt")
+          python ../../ci/ta_score.py "$W/data/aoi.tif" "${V[@]}" 2>&1 | tee score.log
+          { echo "### Adaptation experiment (shards 9 x $SHARD; rounds 2 x 9 x $ROUND steps; serial variants as named)"; grep '^|' score.log; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scores
+          path: LightSenGLEAN/Testing/scores.csv

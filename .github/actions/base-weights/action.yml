@@ -1,0 +1,15 @@
+name: base-weights
+description: LightSenGLEAN base generator weights (cached download from Drive)
+runs:
+  using: composite
+  steps:
+    - id: w
+      uses: actions/cache@v4
+      with:
+        path: LightSenGLEAN/weights/gens_light_sen_glean.pt
+        key: weights-light-1xYVdb8y
+    - if: steps.w.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
+        test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML

@@ -1,0 +1,100 @@
+# One round of parallel target adaptation: 9 shards of the AOI each adapt from the same start weights, then average.
+name: ta-round
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      start:
+        type: string
+        required: true
+        description: "artifact holding the start checkpoint (avg.pt), or 'base'"
+      steps:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  shards:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: # 520 px windows over the 1341 x 1337 px AOI clip: 3 x 3, last window flush with the edge
+        include:
+          - {k: 0, col: 0, row: 0}
+          - {k: 1, col: 410, row: 0}
+          - {k: 2, col: 821, row: 0}
+          - {k: 3, col: 0, row: 408}
+          - {k: 4, col: 410, row: 408}
+          - {k: 5, col: 821, row: 408}
+          - {k: 6, col: 0, row: 817}
+          - {k: 7, col: 410, row: 817}
+          - {k: 8, col: 821, row: 817}
+    name: ${{ inputs.tag }} shard ${{ matrix.k }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      K: ${{ matrix.k }}
+      COL: ${{ matrix.col }}
+      ROW: ${{ matrix.row }}
+      STEPS: ${{ inputs.steps }}
+      START: ${{ inputs.start }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/base-weights
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip
+          path: data
+      - if: inputs.start != 'base'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.start }}
+          path: start
+      - name: Crop shard
+        run: '/opt/dv/bin/python ci/crop_px.py data/aoi.tif data/shard.tif "$COL" "$ROW" 520'
+      - name: Adapt shard
+        working-directory: LightSenGLEAN/Testing
+        run: |
+          CK=../weights/gens_light_sen_glean.pt
+          if [ "$START" != base ]; then CK="$GITHUB_WORKSPACE/start/avg.pt"; fi
+          python eval_light_glean_all.py --checkpoint_g "$CK" --checkpoint_d ../weights/discs_all.pt \
+            --batch 1 --nepoch "$STEPS" --do_TA --data_path "$GITHUB_WORKSPACE/data/shard.tif" 2>&1 | tail -n 40
+          mkdir -p "$GITHUB_WORKSPACE/shard" && cp "${CK%.pt}_TA.pt" "$GITHUB_WORKSPACE/shard/shard_${K}.pt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ inputs.tag }}-${{ matrix.k }}
+          path: shard/shard_${{ matrix.k }}.pt
+          retention-days: 3
+
+  average:
+    needs: shards
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-${{ inputs.tag }}-*
+          merge-multiple: true
+          path: shards
+      - run: python ci/avg_ckpt.py avg.pt shards/*.pt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avg-${{ inputs.tag }}
+          path: avg.pt
+          retention-days: 7
