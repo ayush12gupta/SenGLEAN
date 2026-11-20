@@ -1,0 +1,197 @@
+# SenGLEAN (LightSenGLEAN) super-resolution for a region and acquisition window.
+# prep: finds usable Sentinel-2 days (full AOI coverage, cloud below threshold, least cloudy first)
+# run : one matrix job per day: adapt on a center crop, then enhance the whole clip to 5 m.
+name: senglean
+run-name: SenGLEAN ${{ inputs.begin_date }}-${{ inputs.end_date }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      aoi:
+        type: string
+        required: true
+        description: "Bounding box 'minlon minlat maxlon maxlat', each side 5.5-15 km"
+        default: "-66.7271 45.9052 -66.5591 46.0220"
+      begin_date:
+        type: string
+        required: true
+        description: Earliest acquisition date, YYYYmmdd
+        default: "20250601"
+      end_date:
+        type: string
+        required: true
+        description: Latest acquisition date, YYYYmmdd
+        default: "20250915"
+      cloud_cover:
+        type: string
+        required: true
+        description: Maximum Sentinel-2 cloud cover (%)
+        default: "10"
+      max_scenes:
+        type: string
+        required: true
+        description: Process at most this many days, least cloudy first (each takes ~3 h on a free runner)
+        default: "1"
+      nepoch:
+        type: string
+        required: true
+        description: Target-adaptation steps (150 = paper setting, ~2.3 h; use 5 for a quick test)
+        default: "150"
+      ta_km:
+        type: string
+        required: true
+        description: Adapt on a centered crop of this size (km); the whole AOI is still enhanced
+        default: "6"
+
+permissions:
+  contents: read
+
+env:
+  AOI: ${{ inputs.aoi || '-66.7271 45.9052 -66.5591 46.0220' }}
+  BEGIN: ${{ inputs.begin_date || '20250601' }}
+  END: ${{ inputs.end_date || '20250915' }}
+  CLOUD: ${{ inputs.cloud_cover || '10' }}
+  MAX_SCENES: ${{ inputs.max_scenes || '1' }}
+  NEPOCH: ${{ inputs.nepoch || '150' }}
+  TA_KM: ${{ inputs.ta_km || '6' }}
+  BATCH: "1" # batch 2 does not fit 7 GB
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      MATRIX: ${{ steps.pick.outputs.MATRIX }}
+      SCENE_COUNT: ${{ steps.pick.outputs.SCENE_COUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install pystac-client planetary-computer shapely
+      - name: Select acquisition days
+        id: pick
+        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES"
+      - name: Summarize request
+        run: |
+          {
+            echo "## SenGLEAN request"
+            echo "- AOI: \`$AOI\`"
+            echo "- Acquisition window: \`$BEGIN\` to \`$END\`, cloud < \`$CLOUD\`%"
+            echo "- Days to process: \`${{ steps.pick.outputs.SCENE_COUNT }}\` (max \`$MAX_SCENES\`)"
+            echo "- Adaptation: \`$NEPOCH\` steps on a \`$TA_KM\` km crop"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  run:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.MATRIX) }}
+    name: ${{ matrix.date }} (cloud ${{ matrix.cloud }}%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # hosted-runner hard cap is 360
+    defaults:
+      run:
+        shell: bash # -eo pipefail, so `| tee` cannot hide a failure
+    env:
+      DATE: ${{ matrix.date }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" # repo imports distutils (gone in 3.12)
+
+      - name: Swap (safety margin on 7 GB runners)
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile >/dev/null && sudo swapon /mnt/swapfile && free -m
+
+      - name: System libs (GDAL)
+        run: sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin
+
+      - name: Model deps (CPU torch)
+        run: |
+          pip install setuptools wheel numpy==1.24.4
+          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+          echo "numpy==1.24.4" > "$RUNNER_TEMP/c.txt" # torch 2.0.1 breaks on numpy 2.x; keep every later install under 1.x
+          pip install -c "$RUNNER_TEMP/c.txt" scipy pillow scikit-image opencv-python-headless==4.8.0.74 tqdm pytorch-msssim \
+            easydict matplotlib imageio requests psutil click torchmetrics==1.0.1 gdown
+          python -c "import numpy, torch; torch.from_numpy(numpy.zeros(1)); print('numpy', numpy.__version__, 'torch', torch.__version__)"
+
+      - name: Data deps (separate venv, newer numpy)
+        run: |
+          python -m venv "$RUNNER_TEMP/dv"
+          "$RUNNER_TEMP/dv/bin/pip" install pystac-client planetary-computer odc-stac rioxarray geopandas shapely
+
+      - name: Build Sentinel-2 clip
+        run: |
+          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --bbox "$AOI" --date "$DATE" --out data/s2_data_clip.tif
+
+      - name: Base weights (cached)
+        id: w
+        uses: actions/cache@v4
+        with:
+          path: LightSenGLEAN/weights/gens_light_sen_glean.pt
+          key: weights-light-1xYVdb8y
+
+      - name: Download base weights
+        if: steps.w.outputs.cache-hit != 'true'
+        run: |
+          gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
+          test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML
+
+      - name: Crop center for adaptation
+        run: |
+          "$RUNNER_TEMP/dv/bin/python" ci/crop_center.py data/s2_data_clip.tif data/s2_data_ta.tif "$TA_KM"
+
+      - name: Target adaptation (small crop)
+        working-directory: LightSenGLEAN/Testing
+        run: |
+          start=$(date +%s)
+          ( while true; do echo "MEM $(free -m | awk 'NR==2{print $3}') MB of $(free -m | awk 'NR==2{print $2}')" | tee -a "$RUNNER_TEMP/mem.log"; sleep 5; done ) &
+          trap 'kill $! 2>/dev/null' EXIT
+          python eval_light_glean_all.py --checkpoint_g ../weights/gens_light_sen_glean.pt \
+            --checkpoint_d ../weights/discs_all.pt --batch "$BATCH" --nepoch "$NEPOCH" --do_TA \
+            --data_path "$GITHUB_WORKSPACE/data/s2_data_ta.tif" 2>&1 | tee ta.log
+          total=$(( $(date +%s) - start ))
+          ta=$(grep 'Time Elapsed' ta.log | tail -1 | awk '{print $3}')
+          {
+            echo "### Adaptation (${TA_KM} km crop, batch $BATCH)"
+            echo "- wall: ${total}s; TA loop: ${ta}s for $((NEPOCH + 1)) steps"
+            echo "- extrapolated 150-step TA: $(awk -v t="$ta" -v n="$NEPOCH" 'BEGIN{printf "%.0f min", t/(n+1)*151/60}')"
+            echo "- peak memory: $(sed -E 's/MEM ([0-9]+) MB.*/\1/' "$RUNNER_TEMP/mem.log" | sort -n | tail -1) MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inference on full clip (adapted weights)
+        working-directory: LightSenGLEAN/Testing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          start=$(date +%s)
+          : > "$RUNNER_TEMP/mem.log"
+          ( while true; do echo "MEM $(free -m | awk 'NR==2{print $3}') MB of $(free -m | awk 'NR==2{print $2}')" | tee -a "$RUNNER_TEMP/mem.log"; sleep 5; done ) &
+          trap 'kill $! 2>/dev/null' EXIT
+          python - <<'PY' 2>&1 | tee infer.log
+          import os, sys
+          sys.path.insert(0, ".")
+          from inference_utils import generate_raster_senglean
+          raw = os.environ["GITHUB_WORKSPACE"] + "/data/s2_data_clip.tif"
+          generate_raster_senglean(raw[:-4] + "_lightsenglean_enhanced.tif", "../weights/gens_light_sen_glean_TA.pt",
+                                   raster_file=raw, scale=2, mscale=2, pad=5, model="light_senglean")
+          PY
+          {
+            echo "### Inference (full clip)"
+            echo "- wall: $(( $(date +%s) - start ))s; peak memory: $(sed -E 's/MEM ([0-9]+) MB.*/\1/' "$RUNNER_TEMP/mem.log" | sort -n | tail -1) MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: senglean-${{ matrix.date }}
+          retention-days: 30
+          path: |
+            data/s2_data_clip_lightsenglean_enhanced.tif
+            LightSenGLEAN/weights/gens_light_sen_glean_TA.pt
+            LightSenGLEAN/Testing/ta.log
+            LightSenGLEAN/Testing/infer.log

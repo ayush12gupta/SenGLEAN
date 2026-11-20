@@ -25,7 +25,10 @@ from scipy.stats import multivariate_normal
 from torch import nn, Tensor
 from torch.nn import functional as F_torch
 from torchvision.transforms import functional as F_vision
-from torchvision.transforms.functional_tensor import rgb_to_grayscale
+try:
+    from torchvision.transforms.functional_tensor import rgb_to_grayscale  # torchvision < 0.17
+except ImportError:
+    from torchvision.transforms.functional import rgb_to_grayscale
 
 __all__ = [
     "random_add_gaussian_noise_torch", "random_add_poisson_noise_torch", "random_mixed_kernels", "generate_sinc_kernel",
