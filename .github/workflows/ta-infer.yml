@@ -1,0 +1,93 @@
+name: LightSenGLEAN target adaptation + inference (CPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      nepoch:
+        description: "Target-adaptation steps (use 5 first to time it; the full run is 150)"
+        default: "5"
+      start_date:
+        description: "Scene search start (leaf-on months avoid snow)"
+        default: "2025-06-01"
+      end_date:
+        default: "2025-09-15"
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # hosted-runner hard cap is 360
+    defaults:
+      run:
+        shell: bash # -eo pipefail, so `| tee` cannot hide a failure
+    env:
+      NEPOCH: ${{ inputs.nepoch }}
+      START: ${{ inputs.start_date }}
+      END: ${{ inputs.end_date }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" # repo imports distutils (gone in 3.12)
+
+      - name: System libs (GDAL)
+        run: sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin
+
+      - name: Model deps (CPU torch)
+        run: |
+          pip install setuptools wheel numpy==1.24.4
+          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+          pip install scipy pillow scikit-image opencv-python-headless tqdm pytorch-msssim \
+            easydict matplotlib imageio requests psutil click torchmetrics==1.0.1 gdown
+
+      - name: Data deps (separate venv, newer numpy)
+        run: |
+          python -m venv "$RUNNER_TEMP/dv"
+          "$RUNNER_TEMP/dv/bin/pip" install pystac-client planetary-computer odc-stac rioxarray geopandas shapely
+
+      - name: Build Sentinel-2 clip
+        run: |
+          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --aoi ci/fredericton_aoi.geojson \
+            --start "$START" --end "$END" --out data/s2_data_clip.tif
+
+      - name: Base weights (cached)
+        id: w
+        uses: actions/cache@v4
+        with:
+          path: LightSenGLEAN/weights/gens_light_sen_glean.pt
+          key: weights-light-1xYVdb8y
+
+      - name: Download base weights
+        if: steps.w.outputs.cache-hit != 'true'
+        run: |
+          gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
+          test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML
+
+      - name: Target adaptation + inference
+        working-directory: LightSenGLEAN/Testing
+        run: |
+          start=$(date +%s)
+          python infer_light_senglean.py --checkpoint_g ../weights/gens_light_sen_glean.pt \
+            --checkpoint_d ../weights/discs_all.pt --batch 2 --nepoch "$NEPOCH" --do_TA \
+            --data_path "$GITHUB_WORKSPACE/data/s2_data_clip.tif" 2>&1 | tee run.log
+          total=$(( $(date +%s) - start ))
+          ta=$(grep 'Time Elapsed' run.log | tail -1 | awk '{print $3}')
+          {
+            echo "### Timing"
+            echo "- total (TA + inference): ${total}s"
+            echo "- TA: ${ta}s for $((NEPOCH + 1)) steps"
+            echo "- extrapolated 150-step TA: $(awk -v t="$ta" -v n="$NEPOCH" 'BEGIN{printf "%.0f min", t/(n+1)*151/60}')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: senglean-output
+          retention-days: 7
+          path: |
+            data/s2_data_clip_lightsenglean_enhanced.tif
+            LightSenGLEAN/weights/gens_light_sen_glean_TA.pt
+            LightSenGLEAN/Testing/run.log
