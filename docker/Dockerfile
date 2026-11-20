@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libgdal-dev gdal-bin git procps gawk zstd ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install setuptools wheel numpy==1.24.4 \
-    && pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu \
+RUN pip install -U pip setuptools wheel numpy==1.24.4 \
+    && pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-build-isolation "GDAL==$(gdal-config --version)" \
     && echo "numpy==1.24.4" > /tmp/c.txt \
     && pip install -c /tmp/c.txt scipy pillow scikit-image opencv-python-headless==4.8.0.74 tqdm pytorch-msssim \
