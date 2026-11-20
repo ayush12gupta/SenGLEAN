@@ -44,8 +44,10 @@ jobs:
           pip install setuptools wheel numpy==1.24.4
           pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
           pip install --no-build-isolation "GDAL==$(gdal-config --version)"
-          pip install scipy pillow scikit-image opencv-python-headless tqdm pytorch-msssim \
+          echo "numpy==1.24.4" > "$RUNNER_TEMP/c.txt" # torch 2.0.1 breaks on numpy 2.x; keep every later install under 1.x
+          pip install -c "$RUNNER_TEMP/c.txt" scipy pillow scikit-image opencv-python-headless==4.8.0.74 tqdm pytorch-msssim \
             easydict matplotlib imageio requests psutil click torchmetrics==1.0.1 gdown
+          python -c "import numpy, torch; torch.from_numpy(numpy.zeros(1)); print('numpy', numpy.__version__, 'torch', torch.__version__)"
 
       - name: Data deps (separate venv, newer numpy)
         run: |
