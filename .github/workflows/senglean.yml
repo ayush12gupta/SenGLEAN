@@ -5,9 +5,6 @@ name: senglean
 run-name: SenGLEAN ${{ inputs.begin_date }}-${{ inputs.end_date }}
 
 on:
-  push: # temporary: exercises the prep job from this branch (dispatch only works once the file is on main)
-    branches: [ta-skip-eval-cpu-fixes]
-    paths: [".github/workflows/senglean.yml", "ci/**"]
   workflow_dispatch:
     inputs:
       aoi:
@@ -55,7 +52,7 @@ env:
   END: ${{ inputs.end_date || '20250915' }}
   CLOUD: ${{ inputs.cloud_cover || '10' }}
   MAX_SCENES: ${{ inputs.max_scenes || '1' }}
-  NEPOCH: ${{ inputs.nepoch || '5' }}
+  NEPOCH: ${{ inputs.nepoch || '150' }}
   TA_KM: ${{ inputs.ta_km || '6' }}
   BATCH: "1" # batch 2 does not fit 7 GB
 
@@ -86,7 +83,6 @@ jobs:
 
   run:
     needs: prep
-    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.MATRIX) }}
