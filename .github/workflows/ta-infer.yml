@@ -12,6 +12,9 @@ on:
       batch:
         description: "TA batch size (1 to fit 7 GB private runners)"
         default: "1"
+      ta_km:
+        description: "Adapt on a centered crop of this size (km); inference still runs on the whole clip"
+        default: "6"
       start_date:
         description: "Scene search start (leaf-on months avoid snow)"
         default: "2025-06-01"
@@ -31,6 +34,7 @@ jobs:
     env:
       NEPOCH: ${{ inputs.nepoch || '5' }}
       BATCH: ${{ inputs.batch || '1' }}
+      TA_KM: ${{ inputs.ta_km || '6' }}
       START: ${{ inputs.start_date || '2025-06-01' }}
       END: ${{ inputs.end_date || '2025-09-15' }}
     steps:
@@ -76,23 +80,48 @@ jobs:
           gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
           test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML
 
-      - name: Target adaptation + inference
+      - name: Crop center for adaptation
+        run: |
+          "$RUNNER_TEMP/dv/bin/python" ci/crop_center.py data/s2_data_clip.tif data/s2_data_ta.tif "$TA_KM"
+
+      - name: Target adaptation (small crop)
         working-directory: LightSenGLEAN/Testing
         run: |
           start=$(date +%s)
-          # memory sampler: lines stay in the log even if the runner is killed
-          ( while true; do echo "MEM $(free -m | awk 'NR==2{print $3" MB used of "$2" MB"}')"; sleep 5; done ) &
+          ( while true; do echo "MEM $(free -m | awk 'NR==2{print $3}') MB of $(free -m | awk 'NR==2{print $2}')" | tee -a "$RUNNER_TEMP/mem.log"; sleep 5; done ) &
           trap 'kill $! 2>/dev/null' EXIT
-          python infer_light_senglean.py --checkpoint_g ../weights/gens_light_sen_glean.pt \
+          python eval_light_glean_all.py --checkpoint_g ../weights/gens_light_sen_glean.pt \
             --checkpoint_d ../weights/discs_all.pt --batch "$BATCH" --nepoch "$NEPOCH" --do_TA \
-            --data_path "$GITHUB_WORKSPACE/data/s2_data_clip.tif" 2>&1 | tee run.log
+            --data_path "$GITHUB_WORKSPACE/data/s2_data_ta.tif" 2>&1 | tee ta.log
           total=$(( $(date +%s) - start ))
-          ta=$(grep 'Time Elapsed' run.log | tail -1 | awk '{print $3}')
+          ta=$(grep 'Time Elapsed' ta.log | tail -1 | awk '{print $3}')
           {
-            echo "### Timing"
-            echo "- total (TA + inference): ${total}s"
-            echo "- TA: ${ta}s for $((NEPOCH + 1)) steps"
+            echo "### Adaptation (${TA_KM} km crop, batch $BATCH)"
+            echo "- wall: ${total}s; TA loop: ${ta}s for $((NEPOCH + 1)) steps"
             echo "- extrapolated 150-step TA: $(awk -v t="$ta" -v n="$NEPOCH" 'BEGIN{printf "%.0f min", t/(n+1)*151/60}')"
+            echo "- peak memory: $(sed -E 's/MEM ([0-9]+) MB.*/\1/' "$RUNNER_TEMP/mem.log" | sort -n | tail -1) MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inference on full clip (adapted weights)
+        working-directory: LightSenGLEAN/Testing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          start=$(date +%s)
+          : > "$RUNNER_TEMP/mem.log"
+          ( while true; do echo "MEM $(free -m | awk 'NR==2{print $3}') MB of $(free -m | awk 'NR==2{print $2}')" | tee -a "$RUNNER_TEMP/mem.log"; sleep 5; done ) &
+          trap 'kill $! 2>/dev/null' EXIT
+          python - <<'PY' 2>&1 | tee infer.log
+          import os, sys
+          sys.path.insert(0, ".")
+          from inference_utils import generate_raster_senglean
+          raw = os.environ["GITHUB_WORKSPACE"] + "/data/s2_data_clip.tif"
+          generate_raster_senglean(raw[:-4] + "_lightsenglean_enhanced.tif", "../weights/gens_light_sen_glean_TA.pt",
+                                   raster_file=raw, scale=2, mscale=2, pad=5, model="light_senglean")
+          PY
+          {
+            echo "### Inference (full clip)"
+            echo "- wall: $(( $(date +%s) - start ))s; peak memory: $(sed -E 's/MEM ([0-9]+) MB.*/\1/' "$RUNNER_TEMP/mem.log" | sort -n | tail -1) MB"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -102,4 +131,5 @@ jobs:
           path: |
             data/s2_data_clip_lightsenglean_enhanced.tif
             LightSenGLEAN/weights/gens_light_sen_glean_TA.pt
-            LightSenGLEAN/Testing/run.log
+            LightSenGLEAN/Testing/ta.log
+            LightSenGLEAN/Testing/infer.log
