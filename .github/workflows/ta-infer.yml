@@ -44,6 +44,11 @@ jobs:
         with:
           python-version: "3.10" # repo imports distutils (gone in 3.12)
 
+      - name: Swap (safety margin on 7 GB runners)
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile >/dev/null && sudo swapon /mnt/swapfile && free -m
+
       - name: System libs (GDAL)
         run: sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin
 
@@ -125,6 +130,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: senglean-output
           retention-days: 7

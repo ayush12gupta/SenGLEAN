@@ -406,7 +406,8 @@ def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif'
 #         o_rgb = netG_rgb(arr_rgb.to('cuda:3'))
 #         o_rgb = F.interpolate(arr_rgb.to('cuda:3'), scale_factor=2, mode="nearest")
 #         o = netG(arr.to('cuda:3'), arr_rgb.to('cuda:3'))
-        o = netG(arr.to(device), arr_rgb.to(device))
+        with torch.no_grad():  # inference only: no autograd graph (7 GB CPU runners OOM without this)
+            o = netG(arr.to(device), arr_rgb.to(device))
         out = np.moveaxis(np.array(o[0].detach().cpu()), 0, -1)
         out = out[(mscale*pad):-(mscale*pad),(mscale*pad):-(mscale*pad)]
         out = np.moveaxis(resize(out, (patch_sz*scale, patch_sz*scale)), -1, 0)
