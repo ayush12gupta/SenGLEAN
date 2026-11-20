@@ -1,42 +1,103 @@
-name: LightSenGLEAN target adaptation + inference (CPU)
+# SenGLEAN (LightSenGLEAN) super-resolution for a region and acquisition window.
+# prep: finds usable Sentinel-2 days (full AOI coverage, cloud below threshold, least cloudy first)
+# run : one matrix job per day: adapt on a center crop, then enhance the whole clip to 5 m.
+name: senglean
+run-name: SenGLEAN ${{ inputs.begin_date }}-${{ inputs.end_date }}
 
 on:
-  push: # temporary: lets this branch run before the file exists on main (dispatch needs it there)
+  push: # temporary: exercises the prep job from this branch (dispatch only works once the file is on main)
     branches: [ta-skip-eval-cpu-fixes]
-    paths: [".github/workflows/ta-infer.yml", "ci/**"]
+    paths: [".github/workflows/senglean.yml", "ci/**"]
   workflow_dispatch:
     inputs:
-      nepoch:
-        description: "Target-adaptation steps (use 5 first to time it; the full run is 150)"
-        default: "5"
-      batch:
-        description: "TA batch size (1 to fit 7 GB private runners)"
-        default: "1"
-      ta_km:
-        description: "Adapt on a centered crop of this size (km); inference still runs on the whole clip"
-        default: "6"
-      start_date:
-        description: "Scene search start (leaf-on months avoid snow)"
-        default: "2025-06-01"
+      aoi:
+        type: string
+        required: true
+        description: "Bounding box 'minlon minlat maxlon maxlat', each side 5.5-15 km"
+        default: "-66.7271 45.9052 -66.5591 46.0220"
+      begin_date:
+        type: string
+        required: true
+        description: Earliest acquisition date, YYYYmmdd
+        default: "20250601"
       end_date:
-        default: "2025-09-15"
+        type: string
+        required: true
+        description: Latest acquisition date, YYYYmmdd
+        default: "20250915"
+      cloud_cover:
+        type: string
+        required: true
+        description: Maximum Sentinel-2 cloud cover (%)
+        default: "10"
+      max_scenes:
+        type: string
+        required: true
+        description: Process at most this many days, least cloudy first (each takes ~3 h on a free runner)
+        default: "1"
+      nepoch:
+        type: string
+        required: true
+        description: Target-adaptation steps (150 = paper setting, ~2.3 h; use 5 for a quick test)
+        default: "150"
+      ta_km:
+        type: string
+        required: true
+        description: Adapt on a centered crop of this size (km); the whole AOI is still enhanced
+        default: "6"
 
 permissions:
   contents: read
 
+env:
+  AOI: ${{ inputs.aoi || '-66.7271 45.9052 -66.5591 46.0220' }}
+  BEGIN: ${{ inputs.begin_date || '20250601' }}
+  END: ${{ inputs.end_date || '20250915' }}
+  CLOUD: ${{ inputs.cloud_cover || '10' }}
+  MAX_SCENES: ${{ inputs.max_scenes || '1' }}
+  NEPOCH: ${{ inputs.nepoch || '5' }}
+  TA_KM: ${{ inputs.ta_km || '6' }}
+  BATCH: "1" # batch 2 does not fit 7 GB
+
 jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      MATRIX: ${{ steps.pick.outputs.MATRIX }}
+      SCENE_COUNT: ${{ steps.pick.outputs.SCENE_COUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install pystac-client planetary-computer shapely
+      - name: Select acquisition days
+        id: pick
+        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES"
+      - name: Summarize request
+        run: |
+          {
+            echo "## SenGLEAN request"
+            echo "- AOI: \`$AOI\`"
+            echo "- Acquisition window: \`$BEGIN\` to \`$END\`, cloud < \`$CLOUD\`%"
+            echo "- Days to process: \`${{ steps.pick.outputs.SCENE_COUNT }}\` (max \`$MAX_SCENES\`)"
+            echo "- Adaptation: \`$NEPOCH\` steps on a \`$TA_KM\` km crop"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   run:
+    needs: prep
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.MATRIX) }}
+    name: ${{ matrix.date }} (cloud ${{ matrix.cloud }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 350 # hosted-runner hard cap is 360
     defaults:
       run:
         shell: bash # -eo pipefail, so `| tee` cannot hide a failure
     env:
-      NEPOCH: ${{ inputs.nepoch || '5' }}
-      BATCH: ${{ inputs.batch || '1' }}
-      TA_KM: ${{ inputs.ta_km || '6' }}
-      START: ${{ inputs.start_date || '2025-06-01' }}
-      END: ${{ inputs.end_date || '2025-09-15' }}
+      DATE: ${{ matrix.date }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,8 +130,7 @@ jobs:
 
       - name: Build Sentinel-2 clip
         run: |
-          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --aoi ci/fredericton_aoi.geojson \
-            --start "$START" --end "$END" --out data/s2_data_clip.tif
+          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --bbox "$AOI" --date "$DATE" --out data/s2_data_clip.tif
 
       - name: Base weights (cached)
         id: w
@@ -132,8 +192,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: senglean-output
-          retention-days: 7
+          name: senglean-${{ matrix.date }}
+          retention-days: 30
           path: |
             data/s2_data_clip_lightsenglean_enhanced.tif
             LightSenGLEAN/weights/gens_light_sen_glean_TA.pt
