@@ -104,6 +104,14 @@ jobs:
     name: adapt ${{ matrix.date }} (cloud ${{ matrix.cloud }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 350 # hosted-runner hard cap is 360
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --privileged # lets the swap step below act on the host
+      volumes:
+        - /mnt:/hostmnt
     defaults:
       run:
         shell: bash # -eo pipefail, so `| tee` cannot hide a failure
@@ -117,9 +125,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swap (safety margin on 7 GB runners)
         run: |
-          sudo fallocate -l 8G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile >/dev/null && sudo swapon /mnt/swapfile && free -m
-      - uses: ./.github/actions/setup
+          fallocate -l 8G /hostmnt/swapfile && chmod 600 /hostmnt/swapfile && mkswap /hostmnt/swapfile >/dev/null \
+            && swapon /hostmnt/swapfile && free -m || echo "swap not available, continuing without it"
 
       - name: Base weights (cached)
         id: w
@@ -135,7 +142,7 @@ jobs:
 
       - name: Adaptation crop and AOI-wide normalisation
         run: |
-          PY="$RUNNER_TEMP/dv/bin/python"
+          PY=/opt/dv/bin/python
           $PY ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $TA_UTM --out data/ta_crop.tif
           $PY ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $AOI_UTM --res 60 --out data/coarse.tif
           $PY ci/norm.py data/coarse.tif norm.json
@@ -179,6 +186,11 @@ jobs:
     name: ${{ matrix.date }} chunk ${{ matrix.idx }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -191,7 +203,6 @@ jobs:
       PADDED: ${{ matrix.padded }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
         with:
           name: ta-${{ matrix.date }}
@@ -199,7 +210,7 @@ jobs:
 
       - name: Build padded chunk clip
         run: |
-          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $PADDED --out data/chunk.tif
+          /opt/dv/bin/python ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $PADDED --out data/chunk.tif
 
       - name: Inference (shared adapted weights and normalisation)
         working-directory: LightSenGLEAN/Testing
@@ -218,7 +229,7 @@ jobs:
       - name: Crop to core
         run: |
           mkdir -p out
-          "$RUNNER_TEMP/dv/bin/python" ci/crop_core.py data/chunk_enhanced.tif "out/chunk_${DATE}_${IDX}.tif" $CORE
+          /opt/dv/bin/python ci/crop_core.py data/chunk_enhanced.tif "out/chunk_${DATE}_${IDX}.tif" $CORE
       - uses: actions/upload-artifact@v4
         with:
           name: chunk-${{ matrix.date }}-${{ matrix.idx }}
