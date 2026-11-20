@@ -75,7 +75,7 @@ def numpy_array_to_raster(output_path,
 
 def generate_raster_all(file_name, chpt_rgb, chpt, raster_file='../sentinel_clip.tif', scale=4, mscale=4, pad=5, model='esrgan'):
     s = Sensor('S2')
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Creating generator model
     # Creating generator model
     if model=='edsr':
@@ -96,11 +96,11 @@ def generate_raster_all(file_name, chpt_rgb, chpt, raster_file='../sentinel_clip
         netG_rgb = RCAN().to(device)
         netG = EDSR(scale=4).to(device)
 
-    netG_rgb = nn.DataParallel(netG_rgb, device_ids=[1, 0, 2, 3])
-    netG = nn.DataParallel(netG, device_ids=[1, 0, 2, 3])
+    netG_rgb = nn.DataParallel(netG_rgb)
+    netG = nn.DataParallel(netG)
 
-    netG_rgb.load_state_dict(torch.load(chpt_rgb))
-    netG.load_state_dict(torch.load(chpt))
+    netG_rgb.load_state_dict(torch.load(chpt_rgb, map_location=device))
+    netG.load_state_dict(torch.load(chpt, map_location=device))
 
     ds = gdal.Open(raster_file)
     arr = ds.ReadAsArray()
@@ -202,7 +202,7 @@ def generate_raster_all(file_name, chpt_rgb, chpt, raster_file='../sentinel_clip
 
 def generate_raster_glean(file_name, chpt_rgb, chpt, raster_file='../sentinel_clip.tif', scale=4, mscale=4, pad=5, rgb_model='esrgan', model='glean'):
     s = Sensor('S2')
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Creating generator model
     if rgb_model=='esrgan':
         from networks import RRDBNet
@@ -220,16 +220,16 @@ def generate_raster_glean(file_name, chpt_rgb, chpt, raster_file='../sentinel_cl
                 growth_channels=config.NETWORK.GROWTH_CHANNELS, num_rrdb=13,
                 upscale=2).to(device)
 
-    netG_rgb = nn.DataParallel(netG_rgb, device_ids=[1, 0, 2, 3])
+    netG_rgb = nn.DataParallel(netG_rgb)
     if model=='glean':
         from networks.glean import GLEANStyleGANv2
         netG = GLEANStyleGANv2(64, 256, 4, 64, 23, rgb_channels=4).to(device)
     elif model=='light_glean':
         from networks.glean import LightGLEANStyleGANv2
         netG = LightGLEANStyleGANv2(64, 256, 4, 64, 23, rgb_channels=4).to(device)
-    netG = nn.DataParallel(netG, device_ids=[1, 0, 2, 3])
-    netG_rgb.load_state_dict(torch.load(chpt_rgb))
-    netG.load_state_dict(torch.load(chpt))
+    netG = nn.DataParallel(netG)
+    netG_rgb.load_state_dict(torch.load(chpt_rgb, map_location=device))
+    netG.load_state_dict(torch.load(chpt, map_location=device))
 
     ds = gdal.Open(raster_file)
     arr = ds.ReadAsArray()
@@ -335,15 +335,15 @@ def generate_raster_glean(file_name, chpt_rgb, chpt, raster_file='../sentinel_cl
 
 def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif', scale=4, mscale=4, pad=5, model='senglean'):
     s = Sensor('S2')
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model=='senglean':
         from networks.glean import SenGLEANStyleGANv2
         netG = SenGLEANStyleGANv2(64, 256, 4, 64, 23, rgb_channels=4).to(device)
     elif model=='light_senglean':
         from networks.glean import LightSenGLEANStyleGANv2
         netG = LightSenGLEANStyleGANv2(64, 256, 4, 64, 23, rgb_channels=4).to(device)
-    netG = nn.DataParallel(netG, device_ids=[1, 0, 2, 3])
-    netG.load_state_dict(torch.load(chpt))
+    netG = nn.DataParallel(netG)
+    netG.load_state_dict(torch.load(chpt, map_location=device))
 
     ds = gdal.Open(raster_file)
     arr = ds.ReadAsArray()
@@ -406,7 +406,8 @@ def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif'
 #         o_rgb = netG_rgb(arr_rgb.to('cuda:3'))
 #         o_rgb = F.interpolate(arr_rgb.to('cuda:3'), scale_factor=2, mode="nearest")
 #         o = netG(arr.to('cuda:3'), arr_rgb.to('cuda:3'))
-        o = netG(arr.to(device), arr_rgb.to(device))
+        with torch.no_grad():  # inference only: no autograd graph (7 GB CPU runners OOM without this)
+            o = netG(arr.to(device), arr_rgb.to(device))
         out = np.moveaxis(np.array(o[0].detach().cpu()), 0, -1)
         out = out[(mscale*pad):-(mscale*pad),(mscale*pad):-(mscale*pad)]
         out = np.moveaxis(resize(out, (patch_sz*scale, patch_sz*scale)), -1, 0)
