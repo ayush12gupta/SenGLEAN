@@ -1,6 +1,9 @@
 name: LightSenGLEAN target adaptation + inference (CPU)
 
 on:
+  push: # temporary: lets this branch run before the file exists on main (dispatch needs it there)
+    branches: [ta-skip-eval-cpu-fixes]
+    paths: [".github/workflows/ta-infer.yml"]
   workflow_dispatch:
     inputs:
       nepoch:
@@ -23,9 +26,9 @@ jobs:
       run:
         shell: bash # -eo pipefail, so `| tee` cannot hide a failure
     env:
-      NEPOCH: ${{ inputs.nepoch }}
-      START: ${{ inputs.start_date }}
-      END: ${{ inputs.end_date }}
+      NEPOCH: ${{ inputs.nepoch || '5' }}
+      START: ${{ inputs.start_date || '2025-06-01' }}
+      END: ${{ inputs.end_date || '2025-09-15' }}
     steps:
       - uses: actions/checkout@v4
 
