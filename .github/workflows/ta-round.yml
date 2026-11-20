@@ -50,6 +50,9 @@ jobs:
       STEPS: ${{ inputs.steps }}
       START: ${{ inputs.start }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
       - uses: ./.github/actions/base-weights
       - uses: actions/download-artifact@v4
@@ -86,6 +89,9 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
