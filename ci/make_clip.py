@@ -4,6 +4,7 @@ Extent = bounds of the AOI geojson. Picks the least-cloudy scene that fully cove
 Usage: python make_clip.py --aoi ci/fredericton_aoi.geojson --start 2025-06-01 --end 2025-09-15 --out data/s2_data_clip.tif
 """
 import argparse
+import os
 import geopandas as gpd
 import odc.stac
 import planetary_computer
@@ -37,4 +38,5 @@ bands = ["B02", "B03", "B04", "B08", "B05", "B06", "B07", "B8A"]
 ds = odc.stac.load([item], bands=bands, bbox=bbox, resolution=10)
 da = ds[bands].to_array(dim="band").isel(time=0).assign_coords(band=list(range(1, 9))).fillna(-9999)
 print("shape (band,y,x):", da.shape, "dtype:", da.dtype)
+os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 da.rio.to_raster(a.out, compress="deflate")
