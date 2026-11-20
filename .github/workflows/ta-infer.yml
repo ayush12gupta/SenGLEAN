@@ -3,7 +3,7 @@ name: LightSenGLEAN target adaptation + inference (CPU)
 on:
   push: # temporary: lets this branch run before the file exists on main (dispatch needs it there)
     branches: [ta-skip-eval-cpu-fixes]
-    paths: [".github/workflows/ta-infer.yml"]
+    paths: [".github/workflows/ta-infer.yml", "ci/**"]
   workflow_dispatch:
     inputs:
       nepoch:
