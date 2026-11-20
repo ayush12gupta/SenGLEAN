@@ -333,7 +333,7 @@ def generate_raster_glean(file_name, chpt_rgb, chpt, raster_file='../sentinel_cl
     ds = None
 
 
-def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif', scale=4, mscale=4, pad=5, model='senglean'):
+def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif', scale=4, mscale=4, pad=5, model='senglean', ms_norm=None):
     s = Sensor('S2')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model=='senglean':
@@ -361,10 +361,11 @@ def generate_raster_senglean(file_name, chpt, raster_file='../sentinel_clip.tif'
     b = b47 #torch.cat((b47, b8a), 0)
     patch_sz = 118   # Variable argument
 
-    ms_norm = []
-    for i in range(arr.shape[0]):
-        i, j = np.percentile(arr[i], [1, 99])
-        ms_norm.append([max(0, i-100), j+100])
+    if ms_norm is None:  # default: per-raster 1-99 percentile stretch; pass a shared (8, 2) array so tiles of one scene are normalised identically
+        ms_norm = []
+        for i in range(arr.shape[0]):
+            i, j = np.percentile(arr[i], [1, 99])
+            ms_norm.append([max(0, i-100), j+100])
     ms_norm = np.array(ms_norm)
     print(ms_norm.shape, ms_norm)
 
