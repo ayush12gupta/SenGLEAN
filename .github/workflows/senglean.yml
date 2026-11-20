@@ -1,5 +1,5 @@
 # SenGLEAN (LightSenGLEAN) super-resolution for a region and acquisition window.
-#   prep : find usable Sentinel-2 days, snap the AOI to a 10 m UTM grid, split it into padded chunks
+#   prep : find usable Sentinel-2 days, snap the AOI to a 10 m UTM grid, split it into <= max_chunks padded chunks (size chosen from the AOI area)
 #   adapt: one job per day: adapt the model once on a center crop
 #   infer: one job per day x chunk, in parallel: enhance the chunk with the shared adapted weights
 #   merge: one job per day: stitch the chunk cores into a single 5 m raster
@@ -34,11 +34,11 @@ on:
         required: true
         description: Process at most this many days, least cloudy first (each runs its own adaptation)
         default: "1"
-      chunk_km:
+      max_chunks:
         type: string
         required: true
-        description: Target chunk size (km); the AOI is split evenly into chunks no larger than this, each its own parallel job
-        default: "8"
+        description: "Split the AOI into at most this many parallel chunk jobs per day (chunks are 4-13 km; free plans run ~20 jobs at once)"
+        default: "16"
       nepoch:
         type: string
         required: true
@@ -64,7 +64,7 @@ env:
   END: ${{ inputs.end_date }}
   CLOUD: ${{ inputs.cloud_cover }}
   MAX_SCENES: ${{ inputs.max_scenes }}
-  CHUNK_KM: ${{ inputs.chunk_km }}
+  MAX_CHUNKS: ${{ inputs.max_chunks }}
   NEPOCH: ${{ inputs.nepoch }}
   BATCH: ${{ inputs.batch }}
   TA_KM: ${{ inputs.ta_km }}
@@ -85,7 +85,7 @@ jobs:
       - run: pip install pystac-client planetary-computer shapely pyproj
       - name: Select days and plan chunks
         id: pick
-        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$CHUNK_KM" "$TA_KM"
+        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$MAX_CHUNKS" "$TA_KM"
       - name: Summarize request
         run: |
           {
