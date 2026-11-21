@@ -3,6 +3,7 @@
 #   adapt: one job per day: adapt the model once on a center crop
 #   infer: one job per day x chunk, in parallel: enhance the chunk with the shared adapted weights
 #   merge: one job per day: stitch the chunk cores into a single 5 m raster
+#   report: one job per day, alongside infer: base vs adapted weights on the adaptation crop, written to the job summary
 name: senglean
 run-name: SenGLEAN ${{ inputs.begin_date }}-${{ inputs.end_date }}
 
@@ -42,8 +43,8 @@ on:
       nepoch:
         type: string
         required: true
-        description: Target-adaptation steps (150 = paper setting; use 5 for a quick test)
-        default: "150"
+        description: Target-adaptation steps (80 keeps ~96% of the gain of 153; 5 for a quick test)
+        default: "80"
       batch:
         type: string
         required: true
@@ -52,8 +53,8 @@ on:
       ta_km:
         type: string
         required: true
-        description: Adapt on a centered crop of this size (km), at least 5.2
-        default: "6"
+        description: Adapt on a centered crop of this size (km, at least 5.2); smaller AOIs are adapted on in full
+        default: "13"
 
 permissions:
   contents: read
@@ -135,17 +136,7 @@ jobs:
           fallocate -l 8G /hostmnt/swapfile && chmod 600 /hostmnt/swapfile && mkswap /hostmnt/swapfile >/dev/null \
             && swapon /hostmnt/swapfile && free -m || echo "swap not available, continuing without it"
 
-      - name: Base weights (cached)
-        id: w
-        uses: actions/cache@v4
-        with:
-          path: LightSenGLEAN/weights/gens_light_sen_glean.pt
-          key: weights-light-1xYVdb8y
-      - name: Download base weights
-        if: steps.w.outputs.cache-hit != 'true'
-        run: |
-          gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
-          test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML
+      - uses: ./.github/actions/base-weights
 
       - name: Adaptation crop and AOI-wide normalisation
         run: |
@@ -176,7 +167,7 @@ jobs:
         if: always()
         run: |
           mkdir -p stage
-          cp LightSenGLEAN/weights/gens_light_sen_glean_TA.pt norm.json LightSenGLEAN/Testing/ta.log stage/ || true
+          cp LightSenGLEAN/weights/gens_light_sen_glean_TA.pt norm.json data/ta_crop.tif LightSenGLEAN/Testing/ta.log stage/ || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -245,6 +236,43 @@ jobs:
           name: chunk-${{ matrix.date }}-${{ matrix.idx }}
           path: out/chunk_${{ matrix.date }}_${{ matrix.idx }}.tif
           retention-days: 7
+
+  report:
+    needs: [prep, adapt]
+    continue-on-error: true # a reporting problem must not fail a finished run
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.DAYS) }}
+    name: report ${{ matrix.date }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/base-weights
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta-${{ matrix.date }}
+          path: ta
+      - name: Score base vs adapted weights
+        working-directory: LightSenGLEAN/Testing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATE: ${{ matrix.date }}
+        run: |
+          W="$GITHUB_WORKSPACE"
+          python ../../ci/ta_score.py "$W/ta/ta_crop.tif" base=../weights/gens_light_sen_glean.pt adapted="$W/ta/gens_light_sen_glean_TA.pt" 2>&1 | tee score.log
+          { echo "### Adaptation check $DATE (self-supervised PSNR/SSIM on the adaptation crop; higher is better)"; grep '^|' score.log; } >> "$GITHUB_STEP_SUMMARY"
 
   merge:
     needs: [prep, infer]

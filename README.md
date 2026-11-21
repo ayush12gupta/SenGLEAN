@@ -27,6 +27,23 @@ Then you can perform the inference using the [Inference Notebook](./Inference.ip
 > **_NOTE_:** During inference the bands of sentinel input must be [B2, B3, B4, B8] @ 10m  + [ B5, B6, B7, B8a ] (interpolated to 10m)
 
 
+## Run on GitHub Actions
+
+The **senglean** workflow (Actions tab, *Run workflow*) enhances Sentinel-2 to 5 m for any region and acquisition window with LightSenGLEAN, on GitHub-hosted CPU runners.
+
+| Input | Meaning |
+|---|---|
+| `aoi` | bounding box `minlon minlat maxlon maxlat`, each side 5.5-40 km |
+| `begin_date`, `end_date`, `cloud_cover` | acquisition window (`YYYYmmdd`) and maximum cloud cover (%) |
+| `max_scenes` | days to process, least cloudy first (each gets its own adaptation) |
+| `max_chunks` | the AOI is split into at most this many parallel chunk jobs (4-13 km each; free plans run about 20 jobs at once) |
+| `nepoch` | target-adaptation steps (default 80; 5 for a quick test) |
+| `ta_km` | adapt on a centered crop of this size (default 13); smaller AOIs are adapted on in full |
+
+For each day it adapts the model once, enhances every chunk in parallel with the same adapted weights and a shared normalisation, and stitches the chunks into one GeoTIFF (artifact `senglean-<date>`: 8 bands B2, B3, B4, B8, B5, B6, B7, B8A at 5 m, float32). The adapted weights are kept as `ta-<date>`, and the job summary shows PSNR/SSIM of the base versus adapted weights on the adaptation crop.
+
+All jobs run in a prebuilt image (`ghcr.io/<owner>/senglean-env`, built from `docker/Dockerfile` by the *build-env* workflow). A 13.4 km AOI with 5 adaptation steps takes about 9 minutes; adaptation itself costs roughly 11-28 s per step depending on the runner.
+
 ## Citation
 
 If you find this code helpful, please cite our paper:
