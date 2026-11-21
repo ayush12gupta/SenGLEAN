@@ -82,6 +82,21 @@ def _split(lo, hi, n, res=10):  # n near-equal pieces, edges on the res grid (no
     return [lo + round((hi - lo) / n * k / res) * res for k in range(n + 1)]
 
 
+MIN_CHUNK_KM, MAX_CHUNK_KM = 4, 13  # below ~4 km setup time dominates; 13 km is the largest chunk-sized clip tested
+
+
+def auto_chunk_km(aoi, max_chunks):
+    """Smallest chunk size (>= MIN_CHUNK_KM) whose even split of the AOI gives at most max_chunks chunks."""
+    w, h = (aoi[2] - aoi[0]) / 1000, (aoi[3] - aoi[1]) / 1000
+    km = max(MIN_CHUNK_KM, math.sqrt(w * h / max_chunks))
+    while ceil(w / km) * ceil(h / km) > max_chunks:
+        km += 0.1
+    if km > MAX_CHUNK_KM:
+        raise SystemExit(f"{w:.1f} x {h:.1f} km needs chunks of {km:.1f} km to stay within {max_chunks} chunks; "
+                         f"the largest tested chunk is {MAX_CHUNK_KM} km, so raise max_chunks")
+    return km
+
+
 def chunks(aoi, chunk_km, pad_m=500):
     nx, ny = ceil((aoi[2] - aoi[0]) / (chunk_km * 1000)), ceil((aoi[3] - aoi[1]) / (chunk_km * 1000))
     xe, ye = _split(aoi[0], aoi[2], nx), _split(aoi[1], aoi[3], ny)

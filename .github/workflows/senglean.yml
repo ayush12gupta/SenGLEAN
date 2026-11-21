@@ -1,8 +1,9 @@
 # SenGLEAN (LightSenGLEAN) super-resolution for a region and acquisition window.
-#   prep : find usable Sentinel-2 days, snap the AOI to a 10 m UTM grid, split it into padded chunks
+#   prep : find usable Sentinel-2 days, snap the AOI to a 10 m UTM grid, split it into <= max_chunks padded chunks (size chosen from the AOI area)
 #   adapt: one job per day: adapt the model once on a center crop
 #   infer: one job per day x chunk, in parallel: enhance the chunk with the shared adapted weights
 #   merge: one job per day: stitch the chunk cores into a single 5 m raster
+#   report: one job per day, alongside infer: base vs adapted weights on the adaptation crop, written to the job summary
 name: senglean
 run-name: SenGLEAN ${{ inputs.begin_date }}-${{ inputs.end_date }}
 
@@ -34,16 +35,16 @@ on:
         required: true
         description: Process at most this many days, least cloudy first (each runs its own adaptation)
         default: "1"
-      chunk_km:
+      max_chunks:
         type: string
         required: true
-        description: Target chunk size (km); the AOI is split evenly into chunks no larger than this, each its own parallel job
-        default: "8"
+        description: "Split the AOI into at most this many parallel chunk jobs per day (chunks are 4-13 km; free plans run ~20 jobs at once)"
+        default: "16"
       nepoch:
         type: string
         required: true
-        description: Target-adaptation steps (150 = paper setting; use 5 for a quick test)
-        default: "150"
+        description: Target-adaptation steps (80 keeps ~96% of the gain of 153; 5 for a quick test)
+        default: "80"
       batch:
         type: string
         required: true
@@ -52,8 +53,8 @@ on:
       ta_km:
         type: string
         required: true
-        description: Adapt on a centered crop of this size (km), at least 5.2
-        default: "6"
+        description: Adapt on a centered crop of this size (km, at least 5.2); smaller AOIs are adapted on in full
+        default: "13"
 
 permissions:
   contents: read
@@ -64,7 +65,7 @@ env:
   END: ${{ inputs.end_date }}
   CLOUD: ${{ inputs.cloud_cover }}
   MAX_SCENES: ${{ inputs.max_scenes }}
-  CHUNK_KM: ${{ inputs.chunk_km }}
+  MAX_CHUNKS: ${{ inputs.max_chunks }}
   NEPOCH: ${{ inputs.nepoch }}
   BATCH: ${{ inputs.batch }}
   TA_KM: ${{ inputs.ta_km }}
@@ -72,20 +73,24 @@ env:
 jobs:
   prep:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       DAYS: ${{ steps.pick.outputs.DAYS }}
       CHUNKS: ${{ steps.pick.outputs.CHUNKS }}
       DAY_COUNT: ${{ steps.pick.outputs.DAY_COUNT }}
       CHUNK_COUNT: ${{ steps.pick.outputs.CHUNK_COUNT }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: pip install pystac-client planetary-computer shapely pyproj
       - name: Select days and plan chunks
         id: pick
-        run: python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$CHUNK_KM" "$TA_KM"
+        run: /opt/dv/bin/python -u ci/prep_scenes.py "$BEGIN" "$END" "$AOI" "$CLOUD" "$MAX_SCENES" "$MAX_CHUNKS" "$TA_KM"
       - name: Summarize request
         run: |
           {
@@ -104,6 +109,14 @@ jobs:
     name: adapt ${{ matrix.date }} (cloud ${{ matrix.cloud }}%)
     runs-on: ubuntu-latest
     timeout-minutes: 350 # hosted-runner hard cap is 360
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --privileged # lets the swap step below act on the host
+      volumes:
+        - /mnt:/hostmnt
     defaults:
       run:
         shell: bash # -eo pipefail, so `| tee` cannot hide a failure
@@ -114,28 +127,20 @@ jobs:
       AOI_UTM: ${{ matrix.aoi }}
       TA_UTM: ${{ matrix.ta }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
       - name: Swap (safety margin on 7 GB runners)
         run: |
-          sudo fallocate -l 8G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile >/dev/null && sudo swapon /mnt/swapfile && free -m
-      - uses: ./.github/actions/setup
+          fallocate -l 8G /hostmnt/swapfile && chmod 600 /hostmnt/swapfile && mkswap /hostmnt/swapfile >/dev/null \
+            && swapon /hostmnt/swapfile && free -m || echo "swap not available, continuing without it"
 
-      - name: Base weights (cached)
-        id: w
-        uses: actions/cache@v4
-        with:
-          path: LightSenGLEAN/weights/gens_light_sen_glean.pt
-          key: weights-light-1xYVdb8y
-      - name: Download base weights
-        if: steps.w.outputs.cache-hit != 'true'
-        run: |
-          gdown 1xYVdb8ylri04ChkkcUbesVxzo3RDBcoa -O LightSenGLEAN/weights/gens_light_sen_glean.pt
-          test "$(stat -c%s LightSenGLEAN/weights/gens_light_sen_glean.pt)" -gt 100000000 # Drive quota pages are tiny HTML
+      - uses: ./.github/actions/base-weights
 
       - name: Adaptation crop and AOI-wide normalisation
         run: |
-          PY="$RUNNER_TEMP/dv/bin/python"
+          PY=/opt/dv/bin/python
           $PY ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $TA_UTM --out data/ta_crop.tif
           $PY ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $AOI_UTM --res 60 --out data/coarse.tif
           $PY ci/norm.py data/coarse.tif norm.json
@@ -162,7 +167,7 @@ jobs:
         if: always()
         run: |
           mkdir -p stage
-          cp LightSenGLEAN/weights/gens_light_sen_glean_TA.pt norm.json LightSenGLEAN/Testing/ta.log stage/ || true
+          cp LightSenGLEAN/weights/gens_light_sen_glean_TA.pt norm.json data/ta_crop.tif LightSenGLEAN/Testing/ta.log stage/ || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -179,6 +184,11 @@ jobs:
     name: ${{ matrix.date }} chunk ${{ matrix.idx }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -190,8 +200,10 @@ jobs:
       CORE: ${{ matrix.core }}
       PADDED: ${{ matrix.padded }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
         with:
           name: ta-${{ matrix.date }}
@@ -199,7 +211,7 @@ jobs:
 
       - name: Build padded chunk clip
         run: |
-          "$RUNNER_TEMP/dv/bin/python" ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $PADDED --out data/chunk.tif
+          /opt/dv/bin/python ci/make_clip.py --items "$ITEMS" --epsg "$EPSG" --bounds $PADDED --out data/chunk.tif
 
       - name: Inference (shared adapted weights and normalisation)
         working-directory: LightSenGLEAN/Testing
@@ -218,12 +230,49 @@ jobs:
       - name: Crop to core
         run: |
           mkdir -p out
-          "$RUNNER_TEMP/dv/bin/python" ci/crop_core.py data/chunk_enhanced.tif "out/chunk_${DATE}_${IDX}.tif" $CORE
+          /opt/dv/bin/python ci/crop_core.py data/chunk_enhanced.tif "out/chunk_${DATE}_${IDX}.tif" $CORE
       - uses: actions/upload-artifact@v4
         with:
           name: chunk-${{ matrix.date }}-${{ matrix.idx }}
           path: out/chunk_${{ matrix.date }}_${{ matrix.idx }}.tif
           retention-days: 7
+
+  report:
+    needs: [prep, adapt]
+    continue-on-error: true # a reporting problem must not fail a finished run
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.DAYS) }}
+    name: report ${{ matrix.date }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/base-weights
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta-${{ matrix.date }}
+          path: ta
+      - name: Score base vs adapted weights
+        working-directory: LightSenGLEAN/Testing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATE: ${{ matrix.date }}
+        run: |
+          W="$GITHUB_WORKSPACE"
+          python ../../ci/ta_score.py "$W/ta/ta_crop.tif" base=../weights/gens_light_sen_glean.pt adapted="$W/ta/gens_light_sen_glean_TA.pt" 2>&1 | tee score.log
+          { echo "### Adaptation check $DATE (self-supervised PSNR/SSIM on the adaptation crop; higher is better)"; grep '^|' score.log; } >> "$GITHUB_STEP_SUMMARY"
 
   merge:
     needs: [prep, infer]
@@ -232,15 +281,19 @@ jobs:
       matrix: ${{ fromJson(needs.prep.outputs.DAYS) }}
     name: merge ${{ matrix.date }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ayush12gupta/senglean-env:1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 60
     env:
       DATE: ${{ matrix.date }}
     steps:
+      - name: Hardware
+        run: |
+          echo "HW $(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}') | nproc=$(nproc) | load=$(cut -d' ' -f1-3 /proc/loadavg) | ram=$(free -m | awk 'NR==2{print $2}')MB"
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: pip install rasterio numpy
       - uses: actions/download-artifact@v4
         with:
           pattern: chunk-${{ matrix.date }}-*
@@ -249,7 +302,7 @@ jobs:
       - name: Stitch chunks
         run: |
           mkdir -p result
-          python ci/merge_chunks.py "result/senglean_${DATE}.tif" chunks/*.tif
+          /opt/dv/bin/python ci/merge_chunks.py "result/senglean_${DATE}.tif" chunks/*.tif
           ls -lh result
       - uses: actions/upload-artifact@v4
         with:

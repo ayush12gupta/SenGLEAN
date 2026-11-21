@@ -1,13 +1,13 @@
 """Pick the Sentinel-2 acquisition days for a workflow run and plan the chunks. Emits two GitHub matrices.
-Usage: prep_scenes.py BEGIN END AOI CLOUD MAX_SCENES CHUNK_KM TA_KM   (dates YYYYmmdd, AOI 'minlon minlat maxlon maxlat')
+Usage: prep_scenes.py BEGIN END AOI CLOUD MAX_SCENES MAX_CHUNKS TA_KM   (dates YYYYmmdd, AOI 'minlon minlat maxlon maxlat')
 """
 import json
 import os
 import sys
 
-from s2 import aoi_bounds, check_size, chunks, iso, parse_bbox, search, ta_bounds, usable_days, utm_epsg
+from s2 import aoi_bounds, auto_chunk_km, check_size, chunks, iso, parse_bbox, search, ta_bounds, usable_days, utm_epsg
 
-begin, end, aoi_s, cloud, max_scenes, chunk_km, ta_km = sys.argv[1:8]
+begin, end, aoi_s, cloud, max_scenes, max_chunks, ta_km = sys.argv[1:8]
 bbox = parse_bbox(aoi_s)
 check_size(bbox)
 if float(ta_km) < 5.2:
@@ -20,9 +20,10 @@ picked = list(days.items())[: int(max_scenes)]
 
 epsg = utm_epsg(bbox)
 aoi = aoi_bounds(bbox, epsg)
-ch = chunks(aoi, float(chunk_km))
+chunk_km = auto_chunk_km(aoi, int(max_chunks))
+ch = chunks(aoi, chunk_km)
 if len(ch) * len(picked) > 250:
-    raise SystemExit(f"{len(ch)} chunks x {len(picked)} days exceeds the 256-job matrix limit; raise chunk_km or lower max_scenes")
+    raise SystemExit(f"{len(ch)} chunks x {len(picked)} days exceeds the 256-job matrix limit; lower max_chunks or max_scenes")
 ta = ta_bounds(aoi, float(ta_km))
 j = lambda b: " ".join(map(str, b))
 
@@ -34,7 +35,7 @@ for d, v in picked:
     chunk_rows += [{"date": d, "idx": c["idx"], "items": ids, "epsg": epsg, "core": j(c["core"]), "padded": j(c["padded"])} for c in ch]
 for r in day_rows:
     print(r)
-print(f"{len(days)} usable day(s); running {len(picked)} x {len(ch)} chunk(s); AOI {aoi}; adapt on {ta}")
+print(f"{len(days)} usable day(s); running {len(picked)} x {len(ch)} chunk(s) (<= {chunk_km:.1f} km each); AOI {aoi}; adapt on {ta}")
 
 out = os.environ.get("GITHUB_OUTPUT")
 if out:
